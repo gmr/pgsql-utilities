@@ -92,7 +92,7 @@ Parameters:
   -user       Specify the database user to connect as - required
   -password   Specify the database user password
   -start      Start offset at this table number in processing order
-  -table      Reindex a specific table
+  -table      Reindex a specific table or pattern
   -io	      Index offset if doing only one table
 
 Example:
@@ -163,7 +163,7 @@ USAGE;
   // Connect to the database and get all of the tables that have indexes, prefaced with schemaname
   $pdo = new PDO($connect);
 
-  if ( isset($table) )
+  if ( isset($table) && !strstr($table, '%') )
   {
     echo "Reindexing $table concurrently:\n\n";
 
@@ -184,7 +184,14 @@ USAGE;
     die();
   }
 
-  $query = $pdo->query("SELECT schemaname || '.' || tablename AS tablename FROM pg_tables WHERE hasindexes = 't' AND schemaname <> 'pg_catalog' ORDER BY tablename;");
+  if ( isset($table) && strstr($table, '%') )
+  {
+    $sql = "SELECT schemaname || '.' || tablename AS tablename FROM pg_tables WHERE hasindexes = 't' AND schemaname <> 'pg_catalog' AND schemaname || '.' || tablename LIKE '" . $table . "' ORDER BY schemaname, tablename;";
+  } else {
+    $sql = "SELECT schemaname || '.' || tablename AS tablename FROM pg_tables WHERE hasindexes = 't' AND schemaname <> 'pg_catalog' ORDER BY tablename;";
+  }
+  echo $sql;
+  $query = $pdo->query($sql);
   $tables = $query->fetchAll(PDO::FETCH_ASSOC);
   for ( $y = $offset; $y < Count($tables); $y++ )
   {
