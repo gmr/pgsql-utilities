@@ -1,0 +1,286 @@
+#!/usr/bin/env python
+
+'''
+pgTableCopy
+
+@since 2009-04-15
+@author Gavin M. Roy <gmr@myyearbook.com>
+
+Copies data from one table to another, in chunks to lower transactional overhead.
+Dynamically determines schema for copy
+'''
+
+import getpass, math, optparse, psycopg2, sys, time 
+
+def main():
+
+  # Set our various display values for our Option Parser
+  usage = "usage: %prog [options]"
+  version = "%prog 0.1"
+  description = "Copy same schema table data from one table to another in chunks."
+  
+  # Create our parser and setup our command line options
+  parser = optparse.OptionParser(usage=usage,version=version,description=description,conflict_handler='resolve')
+  
+  # Source Option Group 
+  group = optparse.OptionGroup(parser, 'PostgreSQL Source Options')
+  group.add_option('--source-host', '-h', default='localhost', help='database server host or socket directory (default: localhost)')
+  group.add_option('--source-port', '-p', type='int', default=5432, help='database server port (default: 5432)')
+  group.add_option('--source-user', '-u', default='postgres', help='database user name (default: postgres)')
+  group.add_option('--source-prompt', '-w', action="store_true", default=False, help='force password prompt (should happen automatically)')
+  group.add_option('--source-dbname', '-d', help='specify database name to connect to')
+  group.add_option('--source-schema', '-s', default='public', help='schema name to act upon (default: public)')
+  group.add_option('--source-table', '-t', help='table name to act upon')
+  parser.add_option_group(group)
+
+  # Destination Option Group  
+  group = optparse.OptionGroup(parser, 'PostgreSQL Destination Options')
+  group.add_option('--destination-host', '-H', default='localhost', help='database server host or socket directory (default: localhost)')
+  group.add_option('--destination-port', '-P', type='int', default=5432, help='database server port (default: 5432)')
+  group.add_option('--destination-user', '-U', default='postgres', help='database user name (default: postgres)')
+  group.add_option('--destination-prompt', '-W', action="store_true", default=False, help='force password prompt (should happen automatically)')
+  group.add_option('--destination-dbname', '-D', help='specify database name to connect to')
+  group.add_option('--destination-schema', '-S', default='public', help='schema name to act upon (default: public)')
+  group.add_option('--destination-table', '-T', help='table name to act upon')
+  parser.add_option_group(group)
+  
+  # Copy Options
+  group = optparse.OptionGroup(parser, 'Copy options')
+  group.add_option('--chunk-size', '-c', type='int', default=1000, help='Number of records to process at one time.')
+  group.add_option('--order-by-ascending' , '-a', help='specify column to order by ascending.')
+  group.add_option('--order-by-descending' , '-r', help='specify column to order by descending.')
+  parser.add_option_group(group)	
+  
+  # Parse the command line options
+  (options, args) = parser.parse_args()	
+
+  # Validate the command line options	
+  
+  if not options.source_dbname:
+    print "\nError: you must specify a source database name to connect to\n"
+    parser.print_help()
+    sys.exit()
+
+  if not options.source_table:
+    print "\nError: You must specify a source table name to copy\n"
+    parser.print_help()
+    sys.exit()
+
+  if not options.destination_dbname:
+    print "\nError: you must specify a source database name to connect to\n"
+    parser.print_help()
+    sys.exit()
+
+  if not options.destination_table:
+    print "\nError: You must specify a source table name to copy\n"
+    parser.print_help()
+    sys.exit()
+    
+  if options.order_by_ascending is not None and options.order_by_descending is not None:
+    print "\nError: You can not sort by both an ascending and descending order\n"
+    parser.print_help()
+    sys.exit()
+
+  # Build the base Source DSN	
+  source_dsn = "host='%s' port='%i' user='%s' dbname='%s'" % (options.source_host, options.source_port, options.source_user, options.source_dbname)
+  
+  # Prompt for our password if we explicitly ask the program to do so
+  if options.source_prompt:
+    source_dsn = "%s password='%s'" % ( dsn, getpass.getpass('Password: ') )
+  
+  # Connect to the database, retrying if we get a no password supplied error
+  while 1:
+  
+    # Try and connect, if we have a valid connection break out of the loop	
+    try:
+      source_pgsql = psycopg2.connect(source_dsn)
+    
+    # We encountered a problem
+    except psycopg2.OperationalError, e:
+    
+      # Do string checks for various errors
+      if 'Connection refused' in e[0]:
+        print "Error: Connection refusted to PostgreSQL on %s:%i" % (options.source_host, options.source_port)
+        sys.exit(0)
+      
+      if 'authentication failed' in e[0]:
+        print "Error: authentication failed"
+        sys.exit(0)
+      
+      # We need a password
+      if 'no password supplied' in e[0]:
+        dsn = "%s password='%s'" % ( source_dsn, getpass.getpass('Password: ') )
+        continue
+      
+      # Unhandled exception, let the user know and exit the program
+      raise
+    
+    # Everything is ok
+    else:
+      break
+
+  # Build the base Destination DSN	
+  destination_dsn = "host='%s' port='%i' user='%s' dbname='%s'" % (options.destination_host, options.destination_port, options.destination_user, options.destination_dbname)
+  
+  # Prompt for our password if we explicitly ask the program to do so
+  if options.destination_prompt:
+    destination_dsn = "%s password='%s'" % ( dsn, getpass.getpass('Password: ') )
+  
+  # Connect to the database, retrying if we get a no password supplied error
+  while 1:
+  
+    # Try and connect, if we have a valid connection break out of the loop	
+    try:
+      destination_pgsql = psycopg2.connect(destination_dsn)
+    
+    # We encountered a problem
+    except psycopg2.OperationalError, e:
+    
+      # Do string checks for various errors
+      if 'Connection refused' in e[0]:
+        print "Error: Connection refusted to PostgreSQL on %s:%i" % (options.destination_host, options.destination_port)
+        sys.exit(0)
+      
+      if 'authentication failed' in e[0]:
+        print "Error: authentication failed"
+        sys.exit(0)
+      
+      # We need a password
+      if 'no password supplied' in e[0]:
+        dsn = "%s password='%s'" % ( destination_dsn, getpass.getpass('Password: ') )
+        continue
+      
+      # Unhandled exception, let the user know and exit the program
+      raise
+    
+    # Everything is ok
+    else:
+      break
+
+  # Set our Isolation Level
+  source_pgsql.set_isolation_level(0)
+  
+  # Create our cursor to perform the work with			
+  source = source_pgsql.cursor()
+
+  # Set our Isolation Level
+  destination_pgsql.set_isolation_level(0)
+  
+  # Create our cursor to perform the work with			
+  destination = destination_pgsql.cursor()
+
+  query = """SELECT att.attnum AS "number", att.attname AS "name",
+                  att.attnotnull AS not_null,
+                  pg_catalog.format_type(att.atttypid, att.atttypmod) AS "type",
+                  bool_or((con.contype = 'p') IS TRUE) AS primary_key,
+                  bool_or((con.contype = 'u') IS TRUE) AS unique_constraint,
+                  bool_or(ind.indisunique IS TRUE) AS unique_index
+               FROM pg_catalog.pg_attribute att
+               JOIN pg_catalog.pg_class rel ON rel.oid = att.attrelid
+               JOIN pg_catalog.pg_namespace nsp ON nsp.oid = rel.relnamespace
+               LEFT JOIN pg_catalog.pg_constraint con
+                                   ON con.conrelid = rel.oid
+                                          AND att.attnum = ANY(con.conkey)
+                                          AND con.contype IN ('p', 'u')
+               LEFT JOIN pg_catalog.pg_index ind
+                                   ON ind.indrelid = rel.oid
+                                          AND att.attnum = ANY(ind.indkey)
+                                          AND ind.indisunique
+                                          AND ind.indisvalid
+               WHERE rel.relkind = 'r'
+                           AND att.attnum > 0
+                           AND (nsp.nspname, rel.relname) = ('%s', '%s')
+               GROUP BY att.attnum, att.attname, att.attnotnull,
+                                  att.atttypid, att.atttypmod
+               ORDER BY att.attnum;""" 
+
+  # Execute the schema queries and get the data for the schemas
+  source.execute( query % ( options.source_schema, options.source_table) )
+  destination.execute( query % ( options.destination_schema, options.destination_table ) )
+  source_schema = source.fetchall()
+  destination_schema = destination.fetchall()
+  
+  # Compare the schema structure, if they donot match it will error out
+  if source_schema != destination_schema:
+    print 'Error: table schemas do not match.'
+    sys.exit(1)
+
+  # Get the number of rows to copy
+  print 'Fetching row count for source table.'
+  source.execute('SELECT count(1) FROM %s.%s;' % ( options.source_schema, options.source_table ) )
+  rows = source.fetchone()[0]
+  
+  # Cast ints to floats so we get to round up
+  chunks =  int(math.ceil( float(rows) / float(options.chunk_size) ))
+  
+  # Let the user know what's up
+  print '%i rows to copy in %i chunks of %i rows.' % ( rows, chunks, options.chunk_size )
+
+  # Build a fields and values list for making the insert string
+  fields = []
+  pk = []
+  values = []
+  for row in destination_schema:
+    fields.append(row[1])  
+    fields.append(',')
+    values.append('%s')        
+    values.append(',')
+    # Build our primary key string for sorting
+    if row[4] is True or row[5] is True or row[6] is True:
+      pk.append(row[1])
+      pk.append(',')
+    
+  # Remove the Trailing commas
+  fields.pop()
+  if len(pk) > 1: 
+    pk.pop()
+  values.pop()
+
+  # Create the insert SQL statement  
+  insert = 'INSERT INTO %s.%s ( %s ) VALUES ( %s )' % ( options.destination_schema, options.destination_table, ''.join(fields), ''.join(values) )
+  
+  # Some variables for display
+  rows = 0
+  spinner = ['-','\\','|','/']
+  position = 0
+  pk_order_by = ''.join(pk)
+
+  start_time = time.time()
+  
+  # Iterate through the chunks
+  for i in range(0, chunks):
+  
+    print 'Processing chunk %i of %i' % ( i, chunks )
+  
+    # Get our chunk of data from the database
+    offset = i * options.chunk_size
+    if options.order_by_ascending is not None or options.order_by_descending is not None:
+      if options.order_by_ascending is not None:
+        order_by = '%s ASC' % options.order_by_ascending
+      else: 
+        order_by = '%s DESC' % options.order_by_descending
+      source.execute( 'SELECT * FROM %s.%s ORDER BY %s OFFSET %i LIMIT %i' % ( options.source_schema, options.source_table, pk_order_by, offset, options.chunk_size ) )
+    else:
+      source.execute( 'SELECT * FROM %s.%s ORDER BY %s ASC OFFSET %i LIMIT %i' % ( options.source_schema, options.source_table, pk_order_by, offset, options.chunk_size ) )
+    
+    # Loop through the result row by row
+    while 1:
+      row = source.fetchone()
+      if row is None:
+        break
+
+      # Insert into the destination table
+      destination.execute(insert, row)
+            
+      rows += 1
+      sys.stdout.write("%s\r" % spinner[position])
+      sys.stdout.flush()
+      position += 1
+      if position == len(spinner):
+        position = 0
+  
+  # Let the user know that we're done and it worked  
+  print 'Copied %i rows to %s.%s in database %s on %s' % ( rows, options.destination_schema, options.destination_table, options.destination_dbname, options.destination_host )
+
+if __name__ == "__main__":
+  main()	
