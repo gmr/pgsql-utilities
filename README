@@ -1,0 +1,3 @@
+Some scripts require command line PHP compiled with pgsql support, some require pnctl, and others require PDO.  Python scripts require psycopg2.  
+
+It's a hodgepodge of scripts, use at your own risk!

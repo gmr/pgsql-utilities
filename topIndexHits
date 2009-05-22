@@ -1,0 +1,44 @@
+#!/usr/bin/env php
+<?php
+  $db = pg_Connect('host=localhost user=postgres dbname=production');
+  $interval = 5;
+  
+  echo "Initializing...\n";
+  $result = pg_Query($db, "SELECT schemaname || '.' || relname, idx_blks_hit FROM pg_statio_user_tables;");
+  $rows = pg_Num_Rows($result);
+  $counter = array();
+  for ( $y = 0; $y < $rows; $y++ )
+  {
+    $counter[pg_Fetch_Result($result, $y, 0)] = intval(pg_Fetch_Result($result, $y, 1));
+  }
+
+  while ( 1 )
+  {
+    sleep($interval);
+    system('clear');
+    echo "pgStatIO Heavy Index Hitters - " . strftime('%x %X') . " - Interval: " . $interval . "s\n";
+    echo "----------------------------------------------------------------------------------\n";
+    echo str_pad('Table', 40, ' ') . str_pad('Last Difference', 20, ' ', STR_PAD_LEFT) . str_pad('Total Hits', 20, ' ', STR_PAD_LEFT) . "\n";
+    echo "----------------------------------------------------------------------------------\n";
+    $result = pg_Query($db, "SELECT  schemaname || '.' || relname, idx_blks_hit FROM pg_statio_user_tables;");
+    $rows = pg_Num_Rows($result);
+    $last = array();
+    $names = array();
+    for ( $y = 0; $y < $rows; $y++ )
+    {
+      $name = pg_Fetch_Result($result, $y, 0);
+      $count = pg_Fetch_Result($result, $y, 1);
+      $last[$y] = intval($count) - intval($counter[$name]);
+      $names[$y] = $name;
+      $counter[$name] = intval($count);
+  
+    }
+
+    array_multisort($last, SORT_DESC, $names);
+ 
+    $max = count($last);
+    if ( ( $max ) > 20 ) $max = 20;
+    for ( $y = 0; $y < $max; $y++ )
+      echo str_pad(($y + 1) . '.', 4, ' ')  . str_pad($names[$y], 36, ' ', STR_PAD_RIGHT) . str_pad($last[$y], 20, ' ', STR_PAD_LEFT) . str_pad($counter[$names[$y]], 20, ' ', STR_PAD_LEFT) . "\n";
+  
+  }

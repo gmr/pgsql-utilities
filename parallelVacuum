@@ -1,0 +1,135 @@
+#!/usr/local/bin/php
+<?php
+  /**
+   * Multi-process vacuuming
+   * Vacuum the database table by table in parallel to reduce the overall time required to do a complete vacuum
+   * This has to run in CLI PHP with --enable-pcntl and will not work in Windows or via Apache
+   * @author Gavin M. Roy <gmr@myyearbook.com>
+   * @since 2007-09-23
+   * @copyright 2007 Insider Guides, Inc.
+   * @license BSD
+   */
+
+  // Default Maximum number of processes
+  $processes = 15;
+
+  // Usage example
+  $usage = <<<USAGE
+Usage: parallelVacuum.php parameters
+
+Parameters:
+
+  -host      Specify the database host to connect to - required
+  -port      Specify the port to connect to
+  -dbname    Specify the database name to connect to - required
+  -user      Specify the database user to connect as - required
+  -password  Specify the database user password
+  -threads   Set the number of parallel vacuum tasks to run (default 15)
+
+Example:
+
+  ./parallelVacuum.php -host localhost -user postgres -dbname test
+
+USAGE;
+
+  for ( $y = 1; $y < $argc; $y++ )
+  {
+    $command = $argv[$y];
+    $value = $argv[$y+1];
+    $y++;
+    switch ( $command )
+    {
+      case '-host':
+        $host = $value;
+        break;
+      case '-dbname':
+        $dbname = $value;
+        break;
+      case '-port':
+        $port = $value;
+        break;
+      case '-user':
+        $user = $value;
+        break;
+      case '-password':
+        $password = $value;
+        break;
+      case '-threads':
+        $processes = $value;
+        break;
+      default:
+        die('Unknown parameter: ' . $command . "\n");
+    }
+  }
+
+  if ( !isset($host) || !isset($dbname) || !isset($user) )
+  { 
+    die("\nError: Required parameters not set.\n\n" . $usage . "\n");
+  }
+
+  // Start time for duration 
+  $parentStart = time();
+   
+  // Build the connect string
+  $connect = 'pgsql:';
+  $connect .= 'host=' . $host . ';';
+  if ( isset($port) )
+    $connect .= 'port=' . $port . ';';
+  $connect .= 'user=' . $user . ';';
+  if ( isset($password) )
+    $connect .= 'password=' . $password . ';';
+  $connect .= 'dbname=' . $dbname . ';';
+  
+  // Connect to the database and get all of the tables that have indexes, prefaced with schemaname
+  $pdo = new PDO($connect);
+  $query = $pdo->query("SELECT schemaname || '.' || tablename AS tablename FROM pg_tables ORDER BY tablename;");
+  $temp = $query->fetchAll(PDO::FETCH_OBJ);
+
+  // Build a simple array of the tablename column
+  $tables = array();
+  foreach ( $temp AS $row )
+    $tables[] = $row->tablename;
+  unset($temp);
+
+  // Maximum # of tables for each thread
+  $max = Count($tables) / $processes;
+
+  // Loop through each thread and build an array of tables to process
+  // Once that's set, fork and process them
+  for ( $y = 0; $y < $processes; $y++ )
+  {
+    // Build array of tables to process
+    $process = array();
+    for ( $x = 0; $x < $max; $x++ )
+      $process[] = array_shift($tables);
+
+    // Fork
+    $pid = pcntl_fork();
+    if ( $pid == -1 ) 
+    {        
+      die("Could not fork\n");
+    } elseif ( $pid == 0 )  {
+      // As the child process loop through and vacuum the chunk of tables allocated to us
+      $start = time();
+      $pdo = new PDO($connect);
+      $z = 0;
+      foreach ( $process AS $table )
+      {
+        if ( strlen($table) )
+        {
+          $query = "VACUUM FULL " . $table;
+          echo "Executing " . $query . "\n";
+          $pdo->query($query);
+          $query = "REINDEX TABLE " . $table;
+          echo "Executing " . $query . "\n";
+          $pdo->query($query);
+          $z++;
+        }
+      }
+
+      // Let the user know we're done and exit, otherwise we'll participate in the for ( $y ) loop
+      echo "Process completed with $z tables packed in " . ( time() - $start ) . " seconds.\n";
+      exit();
+    }
+  }
+?>
